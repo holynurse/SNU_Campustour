@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<script>
+/* google.script.run → 웹앱 데이터 API 호출로 대체 (외부 호스팅용) */
+(function () {
+  var API = "https://script.google.com/macros/s/AKfycbylxaW0WJvSb1y4QSQEejp80KL0HooIdRxL5lfyIeXfwymeU9bkiHQhJK4o04kP-Afg/exec";
+  var SITE = location.href.replace(/[?#].*$/, '').replace(/admin\.html$/, '').replace(/index\.html$/, '');
+  var FNS = ['getPublicInfo', 'submitApplication', 'lookupApplication', 'cancelApplication', 'submitFeedback',
+    'adminGoogleLogin', 'adminLogin', 'adminLogout', 'adminGetData', 'adminUpdateApp', 'adminAddSlots', 'adminUpdateSlot',
+    'adminDeleteSlot', 'adminSaveProgram', 'adminDeleteProgram', 'adminSyncSnu', 'adminSaveSettings', 'adminGetApiKey',
+    'adminSaveFields', 'adminSetSpots', 'adminSaveNext', 'adminResetNext'];
+  function call(fn, args, tries) {
+    return fetch(API, { method: 'POST', redirect: 'follow', credentials: 'omit', cache: 'no-store',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ fn: fn, args: args }) })
+      .then(function (r) { return r.text(); })
+      .then(function (t) {
+        var o; try { o = JSON.parse(t); } catch (e) { throw new Error('서버 응답을 읽지 못했습니다. 잠시 후 다시 시도해주세요.'); }
+        if (!o.ok) throw new Error(o.error || '요청을 처리하지 못했습니다.');
+        if (fn === 'adminGetData' && o.data) o.data.siteUrl = SITE;
+        return o.data;
+      })
+      .catch(function (e) {
+        // 네트워크 순간 끊김이면 한 번 더 시도 (읽기 전용 요청만)
+        if ((tries || 0) < 1 && /Failed to fetch|NetworkError|Load failed/i.test(String(e && e.message)) && /^(getPublicInfo|lookupApplication|adminGetData)$/.test(fn))
+          return call(fn, args, 1);
+        if (/Failed to fetch|NetworkError|Load failed/i.test(String(e && e.message))) throw new Error('인터넷 연결을 확인한 뒤 다시 시도해주세요.');
+        throw e;
+      });
+  }
+  function runner(ok, fail) {
+    var r = {
+      withSuccessHandler: function (f) { return runner(f, fail); },
+      withFailureHandler: function (f) { return runner(ok, f); }
+    };
+    FNS.forEach(function (fn) {
+      r[fn] = function () {
+        var args = Array.prototype.slice.call(arguments);
+        call(fn, args).then(function (d) { if (ok) ok(d); }, function (e) { if (fail) fail(e); });
+      };
+    });
+    return r;
+  }
+  function params() {
+    var o = {};
+    location.search.replace(/^\?/, '').split('&').forEach(function (kv) {
+      if (!kv) return; var i = kv.indexOf('='); var k = decodeURIComponent(i < 0 ? kv : kv.slice(0, i));
+      o[k] = i < 0 ? '' : decodeURIComponent(kv.slice(i + 1).replace(/\+/g, ' '));
+    });
+    return o;
+  }
+  window.google = { script: {
+    get run() { return runner(null, null); },
+    url: { getLocation: function (cb) { setTimeout(function () { cb({ parameter: params(), hash: location.hash.slice(1) }); }, 0); } }
+  } };
+})();
+</script>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>캠퍼스투어 관리자</title>
+<style>
+  :root {
+    --bg: #f3f4f8; --card: #fff; --ink: #161a2b; --sub: #5b6275; --line: #e1e4ec;
+    --pri: #0f0f70; --pri-soft: #eceefb; --ok: #1f8a4c; --warn: #b7791f; --err: #c53030; --star: #f5a623;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-size: 14px;
+    font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; line-height: 1.5; }
+  .hidden { display: none !important; }
+  button, input, select, textarea { font: inherit; }
+  input, select, textarea { padding: 8px 10px; border: 1.5px solid var(--line); border-radius: 8px; background: #fff; min-width: 0; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--pri); }
+  .btn { padding: 8px 14px; border: 0; border-radius: 8px; background: var(--pri); color: #fff; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .btn.sub { background: #fff; color: var(--pri); border: 1.5px solid var(--line); }
+  .btn.danger { background: #fff; color: var(--err); border: 1.5px solid #f3caca; }
+  .btn:disabled { opacity: .5; cursor: wait; }
+
+  #login { min-height: 100vh; display: grid; place-items: center; padding: 16px; background: linear-gradient(160deg, #0f0f70, #2a2aa0); }
+  #login form { background: var(--card); padding: 28px; border-radius: 16px; width: 100%; max-width: 380px; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+  #login h1 { margin: 0 0 4px; font-size: 20px; }
+  #login input, #login .btn { width: 100%; margin-top: 12px; padding: 12px; }
+
+  header { background: var(--pri); color: #fff; padding: 12px 16px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; flex: 1; min-width: 160px; }
+  header a, header button { color: #fff; background: rgba(255,255,255,.14); border: 0; padding: 6px 12px; border-radius: 8px; text-decoration: none; cursor: pointer; font-size: 13px; }
+  header .who { font-size: 12px; color: #c9cdf0; }
+  nav { display: flex; gap: 4px; padding: 0 16px; background: #fff; border-bottom: 1px solid var(--line); overflow-x: auto; }
+  nav button { border: 0; background: none; padding: 12px 14px; font-weight: 600; color: var(--sub); border-bottom: 3px solid transparent; cursor: pointer; white-space: nowrap; }
+  nav button.on { color: var(--pri); border-bottom-color: var(--pri); }
+  nav .cnt { background: var(--err); color: #fff; border-radius: 99px; font-size: 11px; padding: 1px 6px; margin-left: 4px; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  .grid { display: grid; gap: 14px; }
+  .kpis { grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); }
+  .cols { grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); }
+  .card { background: var(--card); border-radius: 12px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.05); min-width: 0; }
+  .card h3 { margin: 0 0 12px; font-size: 15px; display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .kpi .label { color: var(--sub); font-size: 13px; }
+  .kpi .val { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .kpi .val small { font-size: 14px; font-weight: 500; color: var(--sub); }
+  .kpi.alert .val { color: var(--warn); }
+  .muted { color: var(--sub); font-size: 12px; }
+  .empty { color: var(--sub); text-align: center; padding: 20px 0; }
+
+  .bar-row { display: grid; grid-template-columns: minmax(90px, 150px) 1fr 56px; gap: 8px; align-items: center; margin: 6px 0; }
+  .bar-row > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { height: 10px; background: var(--bg); border-radius: 99px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--pri); border-radius: 99px; }
+  .bar i.hi { background: var(--warn); } .bar i.full { background: var(--err); }
+  .bar-row .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--sub); }
+  .trend { display: flex; align-items: flex-end; gap: 4px; height: 140px; padding-top: 16px; }
+  .trend div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; min-width: 0; }
+  .trend i { width: 100%; max-width: 26px; background: var(--pri); border-radius: 4px 4px 0 0; min-height: 2px; }
+  .trend b { font-size: 11px; font-weight: 600; color: var(--sub); }
+  .trend span { font-size: 10px; color: var(--sub); margin-top: 4px; white-space: nowrap; }
+
+  .filters { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .filters input[type=search] { flex: 1; min-width: 160px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 9px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { font-size: 12px; color: var(--sub); font-weight: 600; white-space: nowrap; background: #fafbfd; }
+  td.nowrap { white-space: nowrap; }
+  tr.detail td { background: #fafbfd; font-size: 13px; }
+  .memo { width: 100%; min-width: 140px; }
+  .tag { display: inline-block; font-size: 11px; background: var(--pri-soft); color: var(--pri); border-radius: 5px; padding: 1px 6px; font-weight: 600; white-space: nowrap; }
+  select.st { font-weight: 700; padding: 4px 6px; }
+  .s-대기 { background: #fff4cc; color: #8a6100; } .s-확정 { background: #d9f2e3; color: #17663a; }
+  .s-완료 { background: #dde8fb; color: #1f4f9a; } .s-취소 { background: #eee; color: #666; }
+  .link { color: var(--pri); cursor: pointer; text-decoration: underline; background: none; border: 0; padding: 0; }
+  .stars { color: var(--star); letter-spacing: 1px; white-space: nowrap; }
+  .fb { border-bottom: 1px solid var(--line); padding: 12px 0; }
+  .fb:last-child { border-bottom: 0; }
+  .fb p { margin: 6px 0 0; white-space: pre-wrap; }
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .form-row label, .field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--sub); font-weight: 600; }
+  .wd { display: flex; gap: 4px; }
+  .wd label { flex-direction: row; align-items: center; gap: 2px; font-weight: 500; color: var(--ink); }
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 10px 18px; border-radius: 10px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 30; max-width: 90vw; }
+  .toast.show { opacity: 1; }
+  .toast.err { background: var(--err); }
+  .switch { position: relative; width: 38px; height: 22px; display: inline-block; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch span { position: absolute; inset: 0; background: #cfd5df; border-radius: 99px; cursor: pointer; transition: .2s; }
+  .switch span:before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s; }
+  .switch input:checked + span { background: var(--ok); }
+  .switch input:checked + span:before { transform: translateX(16px); }
+  tr.past td { color: #9aa2b1; }
+
+  /* 프로그램 */
+  .pcards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); }
+  .pcard { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: #fff; display: flex; flex-direction: column; }
+  .pcard .cover { aspect-ratio: 16/8; background: var(--pri-soft) center/cover no-repeat; position: relative; }
+  .pcard .cover .badges { position: absolute; left: 8px; top: 8px; display: flex; gap: 4px; }
+  .pcard .cover .badges span { background: rgba(255,255,255,.95); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 99px; color: var(--pri); }
+  .pcard .cover .badges .off { color: var(--err); }
+  .pcard .body { padding: 12px 14px; flex: 1; }
+  .pcard h4 { margin: 0 0 4px; font-size: 16px; }
+  .pcard p { margin: 6px 0 0; color: var(--sub); font-size: 13px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .pcard .thumbs { display: flex; gap: 4px; overflow-x: auto; margin-top: 8px; }
+  .pcard .thumbs img { width: 56px; height: 42px; object-fit: cover; border-radius: 4px; flex: none; }
+  .pcard .foot { display: flex; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--line); }
+  .modal { position: fixed; inset: 0; background: rgba(10,10,40,.6); display: grid; place-items: center; padding: 16px; z-index: 20; }
+  .modal form { background: #fff; border-radius: 14px; padding: 20px; width: 100%; max-width: 620px; max-height: 92vh; overflow: auto; display: grid; gap: 12px; }
+  .modal .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .modal .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+  .modal .actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .spotpick { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr)); gap: 6px; margin-top: 6px; }
+  .spotpick label { display: flex; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; font-weight: 500; color: var(--ink); cursor: pointer; }
+  .spotpick label.on { border-color: var(--pri); background: var(--pri-soft); }
+  .spotpick img { width: 40px; height: 30px; object-fit: cover; border-radius: 4px; flex: none; }
+  .spotpick span { font-size: 12px; line-height: 1.3; }
+  .imgprev { width: 100%; aspect-ratio: 16/7; object-fit: cover; border-radius: 8px; background: var(--pri-soft); }
+  @media (max-width: 520px) { .modal .two, .modal .three { grid-template-columns: 1fr; } }
+
+  /* 설정 */
+  .set-row { display: grid; grid-template-columns: minmax(180px, 320px) 1fr; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .set-row:last-child { border-bottom: 0; }
+  .set-row .lbl { font-weight: 600; font-size: 13px; }
+  .set-row input[type=text], .set-row input[type=number], .set-row textarea { width: 100%; }
+  @media (max-width: 640px) { .set-row { grid-template-columns: 1fr; gap: 4px; } }
+  .ftable input[type=text] { width: 100%; }
+  .ftable td { vertical-align: middle; }
+  .ftable .mv { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 0 6px; cursor: pointer; line-height: 20px; }
+  .ftable .mv:disabled { opacity: .3; cursor: default; }
+  .lock { font-size: 11px; color: var(--sub); }
+  .fprev { max-width: 460px; }
+  .fprev label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
+  .fprev input, .fprev select, .fprev textarea { width: 100%; }
+  .fprev em { color: var(--err); font-style: normal; }
+  .btn.ok { background: var(--ok); padding: 3px 10px; font-size: 12px; }
+  .nx-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 10px; }
+  .nx-grid .field.wide, .nx-grid label:has(textarea) { grid-column: 1 / -1; }
+  .nx-grid textarea, .nx-grid input, .nx-grid select { width: 100%; }
+  .nx-group h3 { margin-bottom: 8px; }
+  textarea.mono { font-family: ui-monospace, Consolas, "Malgun Gothic", monospace; font-size: 13px; line-height: 1.55; }
+  .nx-sechead { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  .nx-sechead .mv { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 0 8px; cursor: pointer; line-height: 24px; }
+  .nx-sechead .mv:disabled { opacity: .3; }
+  .nx-help { margin-top: 10px; font-size: 13px; }
+  .nx-help summary { cursor: pointer; color: var(--pri); font-weight: 700; }
+  .nx-helpgrid { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin-top: 8px; align-items: center; }
+  .nx-helpgrid code { background: #f5f6fa; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 12px; white-space: nowrap; }
+  code.k { display: block; background: #f5f6fa; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; word-break: break-all; }
+</style>
+</head>
+<body>
+
+<!-- ───── 로그인 ───── -->
+<div id="login">
+  <form id="login-form">
+    <h1>🔒 캠퍼스투어 관리자</h1>
+    <div class="muted" id="login-who">관리자 구글 계정 확인 중...</div>
+    <input type="password" id="pw" placeholder="관리자 비밀번호" autocomplete="current-password" required>
+    <div id="login-msg" style="color:var(--err);margin-top:8px"></div>
+    <button class="btn">로그인</button>
+  </form>
+</div>
+
+<!-- ───── 앱 ───── -->
+<div id="app" class="hidden">
+  <header>
+    <h1 id="hd-title">캠퍼스투어 관리자</h1>
+    <span class="who" id="who"></span>
+    <button id="refresh">↻ 새로고침</button>
+    <a id="sheet-link" target="_blank" rel="noopener">📊 구글시트</a>
+    <a id="site-link" target="_blank" rel="noopener">🌐 신청 페이지</a>
+    <button id="logout">로그아웃</button>
+  </header>
+  <nav>
+    <button class="on" data-tab="dash">대시보드</button>
+    <button data-tab="apps">신청 관리<span class="cnt hidden" id="pending-cnt"></span></button>
+    <button data-tab="slots">일정 관리</button>
+    <button data-tab="progs">프로그램</button>
+    <button data-tab="fields">신청 항목</button>
+    <button data-tab="next">CAMPUS NEXT</button>
+    <button data-tab="fb">피드백</button>
+    <button data-tab="settings">설정</button>
+  </nav>
+
+  <main>
+    <!-- 대시보드 -->
+    <section id="tab-dash" class="grid">
+      <div class="grid kpis" id="kpis"></div>
+      <div class="grid cols">
+        <div class="card"><h3>다가오는 투어 <span class="muted">예약 / 정원</span></h3><div id="upcoming"></div></div>
+        <div class="card"><h3>최근 14일 신청 추이 <span class="muted">신청일 기준</span></h3><div id="trend" class="trend"></div></div>
+        <div class="card"><h3>프로그램별 신청</h3><div id="by-prog"></div></div>
+        <div class="card"><h3>상태별 현황</h3><div id="by-status"></div></div>
+        <div class="card"><h3>관심 분야</h3><div id="by-interest"></div></div>
+        <div class="card"><h3>최근 피드백 <button class="link" data-goto="fb">전체 보기</button></h3><div id="recent-fb"></div></div>
+      </div>
+    </section>
+
+    <!-- 신청 관리 -->
+    <section id="tab-apps" class="card hidden">
+      <div class="filters">
+        <select id="f-status"><option value="">전체 상태</option></select>
+        <select id="f-prog"><option value="">전체 프로그램</option></select>
+        <select id="f-period">
+          <option value="upcoming">예정된 투어</option><option value="past">지난 투어</option><option value="all">전체 기간</option>
+        </select>
+        <select id="f-date"><option value="">모든 날짜</option></select>
+        <input type="search" id="f-q" placeholder="이름, 연락처, 신청번호, 소속 검색">
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px"><div class="muted" id="apps-summary"></div><button class="btn ok hidden" id="bulk-approve">목록의 대기 건 모두 승인</button></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>투어 일시</th><th>프로그램</th><th>신청번호</th><th>이름 / 소속</th><th>연락처</th><th>인원</th><th>상태</th><th>관리자 메모</th><th></th></tr></thead>
+          <tbody id="apps-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 일정 관리 -->
+    <section id="tab-slots" class="grid hidden">
+      <form class="card" id="slot-form">
+        <h3>투어 일정 추가</h3>
+        <div class="form-row">
+          <label>프로그램<select name="program" id="slot-prog" required></select></label>
+          <label>시작일<input type="date" name="from" required></label>
+          <label>종료일<input type="date" name="to"></label>
+          <label>요일<span class="wd" id="wd"></span></label>
+          <label>시간 (쉼표로 구분)<input name="times" value="10:00, 14:00" required style="width:140px"></label>
+          <label>정원<input type="number" name="capacity" min="1" style="width:80px" required></label>
+          <label style="flex:1;min-width:160px">집결 장소 / 비고<input name="note" placeholder="비우면 프로그램 집결장소"></label>
+          <button class="btn">추가</button>
+        </div>
+        <div class="muted" style="margin-top:8px">이미 있는 일정(같은 날짜·시간·프로그램)은 건너뜁니다. 종료일을 비우면 시작일 하루만 추가됩니다.</div>
+      </form>
+      <div class="card">
+        <h3>일정 목록
+          <span style="display:flex;gap:8px;align-items:center">
+            <select id="slot-filter"><option value="">전체 프로그램</option></select>
+            <label class="muted" style="font-weight:500"><input type="checkbox" id="show-past"> 지난 일정</label>
+          </span>
+        </h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>날짜</th><th>시간</th><th>프로그램</th><th style="min-width:150px">예약 현황</th><th>건수</th><th>공개</th><th>비고</th><th></th></tr></thead>
+            <tbody id="slots-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 프로그램 -->
+    <section id="tab-progs" class="grid hidden">
+      <div class="card">
+        <h3>투어 프로그램
+          <span style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn sub" id="sync-btn">🔄 SNU 캠퍼스맵에서 가져오기</button>
+            <button class="btn" id="new-prog">+ 새 프로그램</button>
+          </span>
+        </h3>
+        <div class="muted" id="sync-info" style="margin:-4px 0 12px"></div>
+        <div class="pcards" id="pcards"></div>
+      </div>
+    </section>
+
+    <!-- 신청 항목 -->
+    <section id="tab-fields" class="grid hidden">
+      <div class="card">
+        <h3>신청서 항목
+          <span style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn sub" id="add-field">+ 항목 추가</button>
+            <button class="btn" id="save-fields">저장</button>
+          </span>
+        </h3>
+        <p class="muted" style="margin-top:-4px">신청자가 입력하는 칸을 정합니다. ↑↓로 순서를 바꾸고, 저장하면 신청 페이지에 바로 반영됩니다. 이름·연락처·인원은 신청 조회와 정원 계산에 필요해 항상 필수입니다. 새로 추가한 항목은 구글시트 <b>신청목록</b> 오른쪽 끝에 열로 생깁니다.</p>
+        <div class="table-wrap">
+          <table class="ftable">
+            <thead><tr><th></th><th style="min-width:140px">항목명</th><th>유형</th><th>필수</th><th>표시</th><th style="min-width:180px">선택지 (쉼표 구분)</th><th style="min-width:180px">안내 문구</th><th style="min-width:150px">표시 조건</th><th></th></tr></thead>
+            <tbody id="fields-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h3>미리보기 <span class="muted">신청 페이지 4단계 화면</span></h3>
+        <div id="fields-preview" class="fprev"></div>
+      </div>
+    </section>
+
+    <!-- CAMPUS NEXT -->
+    <section id="tab-next" class="grid hidden">
+      <div class="card nx-bar">
+        <h3>CAMPUS NEXT 안내 페이지
+          <span style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <span class="tag hidden" id="nx-dirty" style="background:#fff4cc;color:#8a6100">저장 안 됨</span>
+            <a class="btn sub" id="nx-view" target="_blank" rel="noopener">신청 페이지에서 보기 ↗</a>
+            <button class="btn" id="nx-save">저장</button>
+          </span>
+        </h3>
+        <p class="muted" style="margin:-4px 0 0">신청 페이지의 <b>CAMPUS NEXT</b> 탭 내용입니다. 저장하면 바로 반영됩니다.</p>
+        <details class="nx-help"><summary>본문 작성 방법 보기</summary>
+          <div class="nx-helpgrid">
+            <code>빈 줄</code><span>문단 나누기</span>
+            <code>**굵게**</code><span>굵은 글씨</span>
+            <code>## 소제목</code><span>소제목</span>
+            <code>### MEETING 01</code><span>작은 금색 영문 라벨</span>
+            <code>&gt; 문구</code><span>크게 강조한 문장</span>
+            <code>! 문구</code><span>파란 강조 박스 (여러 줄 연속 가능)</span>
+            <code>- 항목</code><span>점 목록</span>
+            <code>💬 질문</code><span>말풍선 (연속으로 쓰면 대화처럼 번갈아 표시)</span>
+            <code>✓ 항목</code><span>초록 체크 목록</span>
+            <code>01. 제목 | 설명</code><span>번호 카드</span>
+            <code>+ A | B | C</code><span>작은 태그들</span>
+            <code>:::</code> <span>카드 시작/끝 (<code>::: gold</code>, <code>::: navy</code>, <code>::: center</code>)</span>
+            <code>[[단계]]</code><span>SEE→GO 단계 카드</span>
+            <code>[[주차]]</code><span>주차 누르기 표</span>
+            <code>[[챌린지]]</code><span>14일 챌린지 체험</span>
+            <code>[[질문카드]]</code><span>분야별 질문 카드</span>
+          </div>
+        </details>
+      </div>
+      <div id="nx-fields" class="grid"></div>
+      <div class="card">
+        <h3>본문 섹션 <span style="display:flex;gap:8px"><button class="btn sub" id="nx-add">+ 섹션 추가</button></span></h3>
+        <p class="muted" style="margin:-4px 0 0">위에서부터 순서대로 표시됩니다. ↑↓로 순서를 바꿀 수 있어요.</p>
+      </div>
+      <div id="nx-sections" class="grid"></div>
+      <div class="card" style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn danger" id="nx-reset">기본 내용으로 되돌리기</button>
+        <button class="btn" onclick="document.getElementById('nx-save').click()">저장</button>
+      </div>
+    </section>
+
+    <!-- 피드백 -->
+    <section id="tab-fb" class="grid hidden">
+      <div class="grid cols">
+        <div class="card kpi"><div class="label">평균 만족도</div><div class="val" id="fb-avg"></div><div class="muted" id="fb-rate"></div></div>
+        <div class="card"><h3>별점 분포</h3><div id="fb-dist"></div></div>
+        <div class="card"><h3>프로그램별 만족도</h3><div id="fb-prog"></div></div>
+      </div>
+      <div class="card">
+        <h3>후기 목록
+          <select id="fb-filter"><option value="all">전체</option><option value="low">3점 이하 (개선 필요)</option><option value="high">4점 이상</option><option value="text">내용 있는 후기만</option></select>
+        </h3>
+        <div id="fb-list"></div>
+      </div>
+    </section>
+
+    <!-- 설정 -->
+    <section id="tab-settings" class="grid hidden">
+      <form class="card" id="settings-form">
+        <h3>운영 설정 <button class="btn">저장</button></h3>
+        <div id="settings-rows"></div>
+      </form>
+      <div class="card">
+        <h3>MCP / 외부 연동</h3>
+        <p class="muted" style="margin-top:0">Claude 등 MCP 클라이언트에서 신청 현황 조회·상태 변경·일정 추가·SNU 동기화를 할 수 있습니다. 아래 값을 MCP 서버 환경변수에 넣으세요. <b>API 키는 외부에 공유하지 마세요.</b></p>
+        <div class="field">TOUR_API_URL<code class="k" id="api-url">-</code></div>
+        <div class="field" style="margin-top:8px">TOUR_API_KEY<code class="k" id="api-key">••••••••</code></div>
+        <div style="display:flex;gap:8px;margin-top:10px">
+          <button class="btn sub" id="show-key">키 보기</button>
+          <button class="btn danger" id="rotate-key">키 재발급</button>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="modal hidden" id="pmodal">
+  <form id="prog-form">
+    <h3 style="margin:0" id="pm-title">프로그램</h3>
+    <input type="hidden" name="code">
+    <label class="field">프로그램명 *<input name="name" required maxlength="60"></label>
+    <div class="three">
+      <label class="field">소요시간(분)<input name="duration" type="number" min="0"></label>
+      <label class="field">이동거리(km)<input name="distance" type="number" step="any" min="0"></label>
+      <label class="field">기본 정원<input name="capacity" type="number" min="1" value="20"></label>
+    </div>
+    <label class="field">소개<textarea name="desc" rows="4" maxlength="2000"></textarea></label>
+    <label class="field">대표 이미지 URL (https)<input name="image" type="url" placeholder="https://..."></label>
+    <img class="imgprev hidden" id="pm-img" alt="" referrerpolicy="no-referrer">
+    <div class="field" id="pm-spots-wrap">신청 화면에 보여줄 방문지 <span id="pm-spot-count" class="muted"></span>
+      <div class="spotpick" id="pm-spots"></div></div>
+    <div class="two">
+      <label class="field">집결 장소<input name="meeting" maxlength="100" placeholder="예) 정문 앞"></label>
+      <label class="field">표시 순서<input name="order" type="number" min="1"></label>
+    </div>
+    <div class="two">
+      <label class="field" style="flex-direction:row;align-items:center;gap:8px"><span class="switch"><input type="checkbox" name="open"><span></span></span> 신청 페이지에 공개</label>
+      <label class="field" style="flex-direction:row;align-items:center;gap:8px" id="pm-sync-wrap"><span class="switch"><input type="checkbox" name="autoSync"><span></span></span> SNU 캠퍼스맵 자동 동기화</label>
+    </div>
+    <div class="muted" id="pm-sync-note"></div>
+    <div class="actions">
+      <button type="button" class="btn danger" id="pm-del" style="margin-right:auto">삭제</button>
+      <button type="button" class="btn sub" id="pm-cancel">취소</button>
+      <button class="btn">저장</button>
+    </div>
+  </form>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  function call(fn) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      var r = google.script.run.withSuccessHandler(resolve).withFailureHandler(reject);
+      r[fn].apply(r, args);
+    });
+  }
+  function $(s) { return document.querySelector(s); }
+  function $$(s, el) { return Array.prototype.slice.call((el || document).querySelectorAll(s)); }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+  function safeUrl(u) { return /^https:\/\//i.test(u || '') ? esc(u) : ''; }
+  function errText(e) { return (e && e.message ? e.message : String(e)).replace(/^Error:\s*/, ''); }
+  function store(k, v) { try { if (v === undefined) return sessionStorage.getItem(k); if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch (e) { return null; } }
+  var toastT;
+  function toast(msg, isErr) { var t = $('#toast'); t.textContent = msg; t.className = 'toast show' + (isErr ? ' err' : ''); clearTimeout(toastT); toastT = setTimeout(function () { t.className = 'toast'; }, 2600); }
+  var WD = ['일', '월', '화', '수', '목', '금', '토'];
+  function pd(ymd) { if (!ymd) return '-'; var d = new Date(ymd + 'T00:00:00'); return (d.getMonth() + 1) + '/' + d.getDate() + '(' + WD[d.getDay()] + ')'; }
+  function addDays(ymd, n) { var d = new Date(ymd + 'T00:00:00'); d.setDate(d.getDate() + n); return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2); }
+  function stars(n) { return '<span class="stars">' + '★'.repeat(n) + '<span style="color:#d4d8e0">' + '★'.repeat(5 - n) + '</span></span>'; }
+  function bars(rows, total) {
+    if (!rows.length) return '<div class="empty">데이터 없음</div>';
+    var max = Math.max.apply(null, rows.map(function (r) { return r[1]; }).concat([1]));
+    return rows.map(function (r) {
+      return '<div class="bar-row"><span title="' + esc(r[0]) + '">' + esc(r[0]) + '</span><div class="bar"><i style="width:' + (r[1] / (total || max) * 100) + '%"></i></div><span class="num">' + (r[2] != null ? r[2] : r[1]) + '</span></div>';
+    }).join('');
+  }
+
+  var TOKEN = store('ct_admin_token') || '';
+  var D = null;
+  function pname(code) { var p = D.programs.filter(function (x) { return x.code === code; })[0]; return p ? p.name : code; }
+
+  // ───── 로그인 ─────
+  $('#login-form').onsubmit = function (e) {
+    e.preventDefault();
+    var btn = e.target.querySelector('button'); btn.disabled = true;
+    $('#login-msg').textContent = '';
+    call('adminLogin', $('#pw').value).then(function (r) { return start(r.token); })
+      .catch(function (err) { $('#login-msg').textContent = errText(err); })
+      .then(function () { btn.disabled = false; });
+  };
+  $('#logout').onclick = function () { call('adminLogout', TOKEN); TOKEN = ''; store('ct_admin_token', null); location.reload(); };
+
+  function start(token) {
+    return call('adminGetData', token).then(function (d) {
+      TOKEN = token; store('ct_admin_token', token);
+      $('#login').classList.add('hidden');
+      $('#app').classList.remove('hidden');
+      setData(d);
+    });
+  }
+
+  function refresh() {
+    $('#refresh').disabled = true;
+    return call('adminGetData', TOKEN).then(setData).catch(function (e) {
+      toast(errText(e), true);
+      if (/만료/.test(errText(e))) setTimeout(function () { store('ct_admin_token', null); location.reload(); }, 1500);
+    }).then(function () { $('#refresh').disabled = false; });
+  }
+  $('#refresh').onclick = refresh;
+  setInterval(function () {
+    var el = document.activeElement;
+    if (TOKEN && D && !document.hidden && $('#pmodal').classList.contains('hidden') && !(el && /INPUT|TEXTAREA|SELECT/.test(el.tagName))) refresh();
+  }, 60000);
+
+  function setData(d) {
+    D = d;
+    $('#hd-title').textContent = (d.orgName || '') + ' 캠퍼스투어 관리자';
+    $('#who').textContent = d.who && d.who !== 'password' ? d.who : '';
+    $('#sheet-link').href = d.sheetUrl;
+    $('#site-link').href = d.siteUrl || d.webAppUrl || '#';
+    $('#api-url').textContent = d.webAppUrl || '(웹앱 배포 후 표시)';
+    if ($('#f-status').options.length === 1)
+      $('#f-status').innerHTML += d.statuses.map(function (s) { return '<option>' + s + '</option>'; }).join('');
+    var progOpts = d.programs.map(function (p) { return '<option value="' + esc(p.code) + '">' + esc(p.name) + (p.open ? '' : ' (비공개)') + '</option>'; }).join('');
+    ['#f-prog', '#slot-filter'].forEach(function (s) { var v = $(s).value; $(s).innerHTML = '<option value="">전체 프로그램</option>' + progOpts; $(s).value = v; });
+    var sv = $('#slot-prog').value; $('#slot-prog').innerHTML = progOpts; if (sv) $('#slot-prog').value = sv;
+    syncSlotDefaults();
+    var pending = d.apps.filter(function (a) { return a.status === '대기'; }).length;
+    $('#pending-cnt').textContent = pending;
+    $('#pending-cnt').classList.toggle('hidden', !pending);
+    renderDash(); renderApps(); renderSlots(); renderProgs(); renderFieldsTab(); renderNextEditor(); renderFb(); renderSettings();
+  }
+
+  // ───── 탭 ─────
+  function go(tab) {
+    $$('nav button').forEach(function (b) { b.classList.toggle('on', b.dataset.tab === tab); });
+    ['dash', 'apps', 'slots', 'progs', 'fields', 'next', 'fb', 'settings'].forEach(function (t) { $('#tab-' + t).classList.toggle('hidden', t !== tab); });
+  }
+  $$('nav button').forEach(function (b) { b.onclick = function () { go(b.dataset.tab); }; });
+  $$('[data-goto]').forEach(function (b) { b.onclick = function () { go(b.dataset.goto); }; });
+
+  // ───── 대시보드 ─────
+  function renderDash() {
+    var apps = D.apps, today = D.today, week = addDays(today, 7);
+    var live = apps.filter(function (a) { return a.status !== '취소'; });
+    var pending = apps.filter(function (a) { return a.status === '대기'; });
+    var weekPeople = apps.filter(function (a) { return (a.status === '확정' || a.status === '대기') && a.date >= today && a.date <= week; })
+      .reduce(function (n, a) { return n + a.people; }, 0);
+    var rated = apps.filter(function (a) { return a.rating; });
+    var avg = rated.length ? (rated.reduce(function (n, a) { return n + a.rating; }, 0) / rated.length).toFixed(2) : '-';
+    var visitors = apps.filter(function (a) { return a.status === '완료'; }).reduce(function (n, a) { return n + a.people; }, 0);
+
+    $('#kpis').innerHTML = [
+      ['전체 신청 (취소 제외)', live.length + '<small> 건</small>', ''],
+      ['처리 대기', pending.length + '<small> 건</small>', pending.length ? 'alert' : ''],
+      ['7일 내 방문 예정', weekPeople + '<small> 명</small>', ''],
+      ['누적 방문 (완료)', visitors + '<small> 명</small>', ''],
+      ['평균 만족도', avg + '<small> / 5 (' + rated.length + '건)</small>', ''],
+    ].map(function (k) { return '<div class="card kpi ' + k[2] + '"><div class="label">' + k[0] + '</div><div class="val">' + k[1] + '</div></div>'; }).join('');
+
+    var up = D.slots.filter(function (s) { return s.date >= today; }).slice(0, 8);
+    $('#upcoming').innerHTML = up.length ? up.map(function (s) {
+      var pct = s.capacity ? s.booked / s.capacity * 100 : 0;
+      return '<div class="bar-row"><span title="' + esc(pname(s.program)) + '">' + pd(s.date) + ' ' + s.time + ' <span class="muted">' + esc(pname(s.program)) + '</span></span><div class="bar"><i class="' +
+        (pct >= 100 ? 'full' : pct >= 80 ? 'hi' : '') + '" style="width:' + Math.min(100, pct) + '%"></i></div><span class="num">' + s.booked + '/' + s.capacity + '</span></div>';
+    }).join('') : '<div class="empty">예정된 일정이 없습니다. [일정 관리]에서 추가하세요.</div>';
+
+    var days = [];
+    for (var i = 13; i >= 0; i--) days.push(addDays(today, -i));
+    var cnt = {};
+    apps.forEach(function (a) { var k = a.createdAt.slice(0, 10); cnt[k] = (cnt[k] || 0) + 1; });
+    var max = Math.max.apply(null, days.map(function (d) { return cnt[d] || 0; }).concat([1]));
+    $('#trend').innerHTML = days.map(function (d) {
+      var n = cnt[d] || 0;
+      return '<div title="' + d + ': ' + n + '건"><b>' + (n || '') + '</b><i style="height:' + (n / max * 100) + '%"></i><span>' + d.slice(5).replace('-', '/') + '</span></div>';
+    }).join('');
+
+    $('#by-prog').innerHTML = bars(D.programs.map(function (p) {
+      var list = live.filter(function (a) { return a.program === p.code; });
+      return [p.name, list.length, list.length + '건'];
+    }).filter(function (r) { return r[1]; }), live.length);
+    $('#by-status').innerHTML = bars(D.statuses.map(function (s) { return [s, apps.filter(function (a) { return a.status === s; }).length]; }), apps.length);
+    var ints = {};
+    live.forEach(function (a) { var k = a.interest || '미선택'; ints[k] = (ints[k] || 0) + 1; });
+    $('#by-interest').innerHTML = bars(Object.keys(ints).map(function (k) { return [k, ints[k]]; }).sort(function (a, b) { return b[1] - a[1]; }), live.length);
+
+    var rf = rated.slice().sort(function (a, b) { return b.feedbackAt.localeCompare(a.feedbackAt); }).slice(0, 3);
+    $('#recent-fb').innerHTML = rf.length ? rf.map(fbItem).join('') : '<div class="empty">아직 피드백이 없습니다.</div>';
+  }
+
+  // ───── 신청 관리 ─────
+  var openDetail = {};
+  ['#f-status', '#f-prog', '#f-period', '#f-date'].forEach(function (s) { $(s).onchange = renderApps; });
+  $('#f-q').oninput = renderApps;
+
+  function renderApps() {
+    var st = $('#f-status').value, fp = $('#f-prog').value, period = $('#f-period').value, fd = $('#f-date').value, q = $('#f-q').value.trim().toLowerCase();
+    var today = D.today;
+    var inPeriod = D.apps.filter(function (a) { return (period === 'all' || (period === 'upcoming' ? a.date >= today : a.date < today)) && (!fp || a.program === fp); });
+    var dates = inPeriod.map(function (a) { return a.date; }).filter(function (d, i, arr) { return arr.indexOf(d) === i; }).sort();
+    if (period === 'past') dates.reverse();
+    if (fd && dates.indexOf(fd) < 0) fd = '';
+    $('#f-date').innerHTML = '<option value="">모든 날짜</option>' + dates.map(function (d) { return '<option value="' + d + '"' + (d === fd ? ' selected' : '') + '>' + pd(d) + '</option>'; }).join('');
+
+    var qd = q.replace(/\D/g, '');
+    var list = inPeriod.filter(function (a) {
+      if (st && a.status !== st) return false;
+      if (fd && a.date !== fd) return false;
+      if (q && [a.name, a.phone, a.id, a.org, a.email].join(' ').toLowerCase().indexOf(q) < 0 && !(qd && a.phone.replace(/\D/g, '').indexOf(qd) >= 0)) return false;
+      return true;
+    }).sort(function (a, b) { var k = (a.date + a.time).localeCompare(b.date + b.time); return period === 'past' ? -k : k; });
+
+    var ppl = list.filter(function (a) { return a.status !== '취소'; }).reduce(function (n, a) { return n + a.people; }, 0);
+    $('#apps-summary').textContent = list.length + '건 · 인원 ' + ppl + '명 (취소 제외)';
+    var waiting = list.filter(function (a) { return a.status === '대기'; });
+    $('#bulk-approve').classList.toggle('hidden', !waiting.length);
+    $('#bulk-approve').textContent = '목록의 대기 ' + waiting.length + '건 모두 승인';
+    $('#bulk-approve').onclick = function () {
+      if (!confirm('대기 중인 ' + waiting.length + '건을 모두 승인(확정)할까요? 이메일을 남긴 신청자에게 확정 메일이 발송됩니다.')) return;
+      var btn = $('#bulk-approve'); btn.disabled = true;
+      waiting.reduce(function (pr, a) { return pr.then(function () { return call('adminUpdateApp', TOKEN, a.id, { status: '확정' }); }); }, Promise.resolve())
+        .then(function () { toast(waiting.length + '건 승인했습니다.'); return refresh(); })
+        .catch(function (e) { toast(errText(e), true); refresh(); }).then(function () { btn.disabled = false; });
+    };
+
+    $('#apps-body').innerHTML = list.length ? list.map(function (a) {
+      return '<tr data-id="' + esc(a.id) + '" class="' + (a.date < today ? 'past' : '') + '">' +
+        '<td class="nowrap"><b>' + pd(a.date) + '</b> ' + esc(a.time) + '</td>' +
+        '<td><span class="tag">' + esc(pname(a.program)) + '</span></td>' +
+        '<td class="nowrap">' + esc(a.id) + '</td>' +
+        '<td><b>' + esc(a.name) + '</b><br><span class="muted">' + (esc(a.org) || '-') + '</span></td>' +
+        '<td class="nowrap">' + esc(a.phone) + '</td>' +
+        '<td>' + a.people + '</td>' +
+        '<td class="nowrap"><select class="st s-' + esc(a.status) + '">' + D.statuses.map(function (s) { return '<option' + (s === a.status ? ' selected' : '') + '>' + s + '</option>'; }).join('') + '</select>' +
+        (a.status === '대기' ? ' <button class="btn ok approve">승인</button>' : '') + '</td>' +
+        '<td><input class="memo" value="' + esc(a.memo) + '" placeholder="메모 입력 후 Enter"></td>' +
+        '<td><button class="link toggle">' + (openDetail[a.id] ? '접기' : '상세') + '</button></td></tr>' +
+        (openDetail[a.id] ? '<tr class="detail"><td colspan="9">' +
+          '<b>이메일</b> ' + (esc(a.email) || '-') + ' &nbsp;·&nbsp; <b>관심분야</b> ' + (esc(a.interest) || '-') + ' &nbsp;·&nbsp; <b>신청일시</b> ' + esc(a.createdAt) +
+          ' &nbsp;·&nbsp; <b>최종수정</b> ' + esc(a.updatedAt) +
+          '<br><b>요청사항</b> ' + (esc(a.request) || '-') +
+          (a.extra && a.extra.length ? '<br>' + a.extra.map(function (x) { return '<b>' + esc(x.label) + '</b> ' + esc(x.value); }).join(' &nbsp;·&nbsp; ') : '') +
+          (a.rating ? '<br><b>피드백</b> ' + stars(a.rating) + ' ' + esc(a.feedback) : '') + '</td></tr>' : '');
+    }).join('') : '<tr><td colspan="9" class="empty">조건에 맞는 신청이 없습니다.</td></tr>';
+
+    $$('#apps-body tr[data-id]').forEach(function (tr) {
+      var id = tr.dataset.id;
+      tr.querySelector('.st').onchange = function (e) {
+        var val = e.target.value;
+        if (val === '취소' && !confirm(id + ' 신청을 취소 처리할까요?')) { renderApps(); return; }
+        updateApp(id, { status: val }, '상태가 "' + val + '"(으)로 변경되었습니다.');
+      };
+      var ap = tr.querySelector('.approve');
+      if (ap) ap.onclick = function () { ap.disabled = true; updateApp(id, { status: '확정' }, id + ' 승인(확정)했습니다.'); };
+      var memo = tr.querySelector('.memo');
+      memo.onkeydown = function (e) { if (e.key === 'Enter') memo.blur(); };
+      memo.onchange = function () { updateApp(id, { memo: memo.value }, '메모가 저장되었습니다.'); };
+      tr.querySelector('.toggle').onclick = function () { openDetail[id] = !openDetail[id]; renderApps(); };
+    });
+  }
+
+  function updateApp(id, patch, okMsg) {
+    call('adminUpdateApp', TOKEN, id, patch).then(function () { toast(okMsg); return refresh(); })
+      .catch(function (e) { toast(errText(e), true); renderApps(); });
+  }
+
+  // ───── 일정 관리 ─────
+  $('#wd').innerHTML = WD.map(function (w, i) { return '<label><input type="checkbox" value="' + i + '"' + (i >= 1 && i <= 5 ? ' checked' : '') + '>' + w + '</label>'; }).join('');
+  $('#show-past').onchange = renderSlots;
+  $('#slot-filter').onchange = renderSlots;
+  $('#slot-prog').onchange = function () { $('#slot-form').elements.capacity.value = ''; syncSlotDefaults(); };
+  function syncSlotDefaults() {
+    var p = D && D.programs.filter(function (x) { return x.code === $('#slot-prog').value; })[0];
+    var f = $('#slot-form').elements;
+    if (p && !f.capacity.value) f.capacity.value = p.capacity || 20;
+    if (p) f.note.placeholder = p.meeting ? '비우면: ' + p.meeting : '집결 장소 / 비고';
+  }
+
+  $('#slot-form').onsubmit = function (e) {
+    e.preventDefault();
+    var f = e.target.elements, btn = e.target.querySelector('button');
+    var p = {
+      program: f.program.value, from: f.from.value, to: f.to.value || f.from.value, capacity: f.capacity.value, note: f.note.value,
+      times: f.times.value.split(/[,\s]+/).filter(Boolean),
+      weekdays: $$('#wd input:checked').map(function (c) { return +c.value; })
+    };
+    btn.disabled = true;
+    call('adminAddSlots', TOKEN, p).then(function (r) {
+      toast(r.added ? r.added + '개 일정이 추가되었습니다.' : '추가된 일정이 없습니다 (중복 또는 요일 불일치).', !r.added);
+      D.slots = r.slots; renderSlots(); renderDash();
+    }).catch(function (err) { toast(errText(err), true); })
+      .then(function () { btn.disabled = false; });
+  };
+
+  function renderSlots() {
+    var past = $('#show-past').checked, fp = $('#slot-filter').value, today = D.today;
+    var cnt = {};
+    D.apps.forEach(function (a) { if (a.status === '대기' || a.status === '확정') { var k = a.date + '|' + a.time + '|' + a.program; cnt[k] = (cnt[k] || 0) + 1; } });
+    var list = D.slots.filter(function (s) { return (past || s.date >= today) && (!fp || s.program === fp); });
+    $('#slots-body').innerHTML = list.length ? list.map(function (s) {
+      var pct = s.capacity ? s.booked / s.capacity * 100 : 0;
+      return '<tr data-key="' + esc(s.key) + '" data-date="' + s.date + '" data-prog="' + esc(s.program) + '" class="' + (s.date < today ? 'past' : '') + '">' +
+        '<td class="nowrap"><b>' + pd(s.date) + '</b></td><td>' + s.time + '</td><td><span class="tag">' + esc(pname(s.program)) + '</span></td>' +
+        '<td><div class="bar-row" style="grid-template-columns:1fr 56px;margin:0"><div class="bar"><i class="' + (pct >= 100 ? 'full' : pct >= 80 ? 'hi' : '') +
+        '" style="width:' + Math.min(100, pct) + '%"></i></div><span class="num">' + s.booked + '/' + s.capacity + '</span></div></td>' +
+        '<td>' + (cnt[s.key] || 0) + '건</td>' +
+        '<td><label class="switch"><input type="checkbox" class="open"' + (s.open ? ' checked' : '') + '><span></span></label></td>' +
+        '<td class="muted">' + esc(s.note) + '</td>' +
+        '<td class="nowrap"><button class="link view">명단</button> &nbsp; <button class="btn danger del" style="padding:3px 8px">삭제</button></td></tr>';
+    }).join('') : '<tr><td colspan="8" class="empty">일정이 없습니다.</td></tr>';
+
+    $$('#slots-body tr[data-key]').forEach(function (tr) {
+      var key = tr.dataset.key, d = tr.dataset.date;
+      tr.querySelector('.open').onchange = function (e) {
+        call('adminUpdateSlot', TOKEN, key, { open: e.target.checked }).then(function (slots) {
+          D.slots = slots; toast(e.target.checked ? '신청 페이지에 공개됩니다.' : '비공개로 전환했습니다.'); renderDash();
+        }).catch(function (err) { toast(errText(err), true); e.target.checked = !e.target.checked; });
+      };
+      tr.querySelector('.del').onclick = function () {
+        if (!confirm(key.split('|').slice(0, 2).join(' ') + ' 일정을 삭제할까요?')) return;
+        call('adminDeleteSlot', TOKEN, key).then(function (slots) { D.slots = slots; renderSlots(); renderDash(); toast('삭제되었습니다.'); })
+          .catch(function (err) { toast(errText(err), true); });
+      };
+      tr.querySelector('.view').onclick = function () {
+        $('#f-period').value = d < today ? 'past' : 'upcoming'; $('#f-status').value = ''; $('#f-q').value = ''; $('#f-prog').value = tr.dataset.prog;
+        renderApps(); $('#f-date').value = d; renderApps(); go('apps');
+      };
+    });
+  }
+
+  // ───── 프로그램 ─────
+  function renderProgs() {
+    $('#sync-info').textContent = D.lastSync ? 'SNU 캠퍼스맵 마지막 동기화: ' + D.lastSync + ' (설정에서 매일 자동 동기화 on/off)' : 'SNU 캠퍼스맵과 아직 동기화하지 않았습니다.';
+    $('#pcards').innerHTML = D.programs.length ? D.programs.map(function (p) {
+      var slots = D.slots.filter(function (s) { return s.program === p.code && s.date >= D.today; });
+      var cover = safeUrl(p.image);
+      var vis = (p.spots || []).filter(function (x) { return x.visible; });
+      return '<div class="pcard" data-code="' + esc(p.code) + '">' +
+        '<div class="cover" style="' + (cover ? 'background-image:url(&quot;' + cover + '&quot;)' : '') + '"><div class="badges">' +
+        '<span class="' + (p.open ? '' : 'off') + '">' + (p.open ? '공개' : '비공개') + '</span>' +
+        (p.snuSeq ? '<span>SNU #' + esc(p.snuSeq) + (p.autoSync ? ' · 자동동기화' : '') + '</span>' : '') + '</div></div>' +
+        '<div class="body"><h4>' + esc(p.name) + '</h4><div class="muted">' + esc(p.code) +
+        (p.duration ? ' · ' + p.duration + '분' : '') + (p.distance ? ' · ' + p.distance + 'km' : '') + ' · 정원 ' + p.capacity + '명' +
+        (p.meeting ? ' · 집결 ' + esc(p.meeting) : '') + '</div>' +
+        '<div class="muted">예정 일정 ' + slots.length + '개 · 방문지 ' + vis.length + '곳' + (p.spots && p.spots.length > vis.length ? ' (전체 ' + p.spots.length + '곳 중)' : '') + '</div>' +
+        '<p>' + esc(p.desc) + '</p>' +
+        (vis.length ? '<div class="thumbs">' + vis.map(function (s) { return safeUrl(s.image) ? '<img src="' + safeUrl(s.image) + '" title="' + esc(s.name) + '" loading="lazy" referrerpolicy="no-referrer">' : ''; }).join('') + '</div>' : '') +
+        '</div><div class="foot"><button class="btn sub edit">수정</button><button class="btn sub addslot">일정 추가</button></div></div>';
+    }).join('') : '<div class="empty">프로그램이 없습니다. [SNU 캠퍼스맵에서 가져오기] 또는 [+ 새 프로그램]으로 추가하세요.</div>';
+    $$('#pcards .pcard').forEach(function (el) {
+      var code = el.dataset.code;
+      el.querySelector('.edit').onclick = function () { openProg(code); };
+      el.querySelector('.addslot').onclick = function () {
+        $('#slot-prog').value = code; $('#slot-form').elements.capacity.value = ''; syncSlotDefaults(); go('slots');
+        $('#slot-form').elements.from.focus();
+      };
+    });
+  }
+
+  $('#new-prog').onclick = function () { openProg(null); };
+  $('#pm-cancel').onclick = function () { $('#pmodal').classList.add('hidden'); };
+  $('#pmodal').onclick = function (e) { if (e.target.id === 'pmodal') e.target.classList.add('hidden'); };
+  $('#prog-form').elements.image.oninput = previewImg;
+  function previewImg() {
+    var u = $('#prog-form').elements.image.value, im = $('#pm-img');
+    if (safeUrl(u)) { im.src = u; im.classList.remove('hidden'); } else im.classList.add('hidden');
+  }
+
+  function openProg(code) {
+    var p = code ? D.programs.filter(function (x) { return x.code === code; })[0] : { capacity: 20, open: true, order: D.programs.length + 1 };
+    var f = $('#prog-form').elements;
+    $('#pm-title').textContent = code ? '프로그램 수정 · ' + code : '새 프로그램';
+    ['code', 'name', 'duration', 'distance', 'capacity', 'desc', 'image', 'meeting', 'order'].forEach(function (k) { f[k].value = p[k] == null ? '' : p[k]; });
+    f.open.checked = !!p.open;
+    f.autoSync.checked = !!p.autoSync;
+    $('#pm-sync-wrap').classList.toggle('hidden', !p.snuSeq);
+    $('#pm-sync-note').textContent = p.snuSeq ? '자동 동기화를 켜두면 이름·소요시간·소개·대표이미지·코스 사진이 SNU 캠퍼스맵 내용으로 매일 갱신됩니다. 직접 수정한 내용을 유지하려면 끄세요.' : '';
+    $('#pm-del').classList.toggle('hidden', !code);
+    var spots = p.spots || [];
+    $('#pm-spots-wrap').classList.toggle('hidden', !spots.length);
+    $('#pm-spots').innerHTML = spots.map(function (sp) {
+      return '<label class="' + (sp.visible ? 'on' : '') + '"><input type="checkbox" data-spot="' + esc(sp.name) + '"' + (sp.visible ? ' checked' : '') + '>' +
+        (safeUrl(sp.image) ? '<img src="' + safeUrl(sp.image) + '" alt="" loading="lazy" referrerpolicy="no-referrer">' : '') + '<span>' + esc(sp.name) + '</span></label>';
+    }).join('');
+    var countSpots = function () {
+      var n = $$('#pm-spots input:checked').length;
+      $('#pm-spot-count').textContent = '· ' + n + '곳 선택' + (n > 10 ? ' (10곳 이내 권장)' : '');
+      $$('#pm-spots label').forEach(function (l) { l.classList.toggle('on', l.querySelector('input').checked); });
+    };
+    $$('#pm-spots input').forEach(function (c) { c.onchange = countSpots; });
+    countSpots();
+    previewImg();
+    $('#pmodal').classList.remove('hidden');
+  }
+
+  $('#prog-form').onsubmit = function (e) {
+    e.preventDefault();
+    var f = e.target.elements, btn = e.target.querySelector('button:not([type])');
+    var p = {};
+    ['code', 'name', 'duration', 'distance', 'capacity', 'desc', 'image', 'meeting', 'order'].forEach(function (k) { p[k] = f[k].value; });
+    p.open = f.open.checked; p.autoSync = f.autoSync.checked;
+    if (!p.code) delete p.code;
+    btn.disabled = true;
+    var spotNames = $$('#pm-spots input').length ? $$('#pm-spots input:checked').map(function (c) { return c.dataset.spot; }) : null;
+    call('adminSaveProgram', TOKEN, p).then(function (progs) {
+      return p.code && spotNames ? call('adminSetSpots', TOKEN, p.code, spotNames) : progs;
+    }).then(function (progs) {
+      D.programs = progs; $('#pmodal').classList.add('hidden'); toast('저장되었습니다.'); setData(D);
+    }).catch(function (err) { toast(errText(err), true); }).then(function () { btn.disabled = false; });
+  };
+  $('#pm-del').onclick = function () {
+    var code = $('#prog-form').elements.code.value;
+    if (!confirm(code + ' 프로그램을 삭제할까요?')) return;
+    call('adminDeleteProgram', TOKEN, code).then(function (progs) {
+      D.programs = progs; $('#pmodal').classList.add('hidden'); toast('삭제되었습니다.'); setData(D);
+    }).catch(function (err) { toast(errText(err), true); });
+  };
+
+  $('#sync-btn').onclick = function () {
+    var btn = $('#sync-btn'); btn.disabled = true; btn.textContent = '동기화 중...';
+    call('adminSyncSnu', TOKEN).then(function (r) { toast(r.message); return refresh(); })
+      .catch(function (err) { toast(errText(err), true); })
+      .then(function () { btn.disabled = false; btn.textContent = '🔄 SNU 캠퍼스맵에서 가져오기'; });
+  };
+
+  // ───── 피드백 ─────
+  $('#fb-filter').onchange = renderFb;
+  function fbItem(a) {
+    return '<div class="fb">' + stars(a.rating) + ' &nbsp;<b>' + esc(a.name) + '</b> <span class="tag">' + esc(pname(a.program)) + '</span> <span class="muted">' + (esc(a.org) || '') +
+      ' · 투어 ' + pd(a.date) + ' ' + esc(a.time) + ' · ' + esc(a.feedbackAt) + '</span>' +
+      (a.feedback ? '<p>' + esc(a.feedback) + '</p>' : '<p class="muted">(내용 없음)</p>') + '</div>';
+  }
+  function renderFb() {
+    var rated = D.apps.filter(function (a) { return a.rating; });
+    var done = D.apps.filter(function (a) { return a.status === '완료' || (a.status !== '취소' && a.date < D.today); }).length;
+    var avgOf = function (l) { return l.length ? l.reduce(function (n, a) { return n + a.rating; }, 0) / l.length : 0; };
+    var avg = avgOf(rated);
+    $('#fb-avg').innerHTML = rated.length ? avg.toFixed(2) + '<small> / 5</small> ' + stars(Math.round(avg)) : '-';
+    $('#fb-rate').textContent = '응답 ' + rated.length + '건 · 참여자 대비 응답률 ' + (done ? Math.round(rated.length / done * 100) : 0) + '%';
+    $('#fb-dist').innerHTML = bars([5, 4, 3, 2, 1].map(function (n) { return [n + '점', rated.filter(function (a) { return a.rating === n; }).length]; }), rated.length);
+    $('#fb-prog').innerHTML = bars(D.programs.map(function (p) {
+      var l = rated.filter(function (a) { return a.program === p.code; });
+      return [p.name, avgOf(l), l.length ? avgOf(l).toFixed(1) + ' (' + l.length + ')' : '-'];
+    }).filter(function (r) { return r[1]; }), 5);
+    var f = $('#fb-filter').value;
+    var list = rated.filter(function (a) {
+      return f === 'all' || (f === 'low' && a.rating <= 3) || (f === 'high' && a.rating >= 4) || (f === 'text' && a.feedback.trim());
+    }).sort(function (a, b) { return b.feedbackAt.localeCompare(a.feedbackAt); });
+    $('#fb-list').innerHTML = list.length ? list.map(fbItem).join('') : '<div class="empty">해당하는 후기가 없습니다.</div>';
+  }
+
+  // ───── 신청 항목 ─────
+  var FIELDS = null, fieldsDirty = false;
+  var TYPE_LABEL = { text: '한 줄 글', textarea: '여러 줄 글', number: '숫자', email: '이메일', tel: '전화번호', select: '선택(드롭다운)', checkbox: '체크박스', date: '날짜' };
+  function renderFieldsTab() {
+    if (!FIELDS || !fieldsDirty) FIELDS = D.fields.map(function (f) { return Object.assign({}, f); });
+    $('#fields-body').innerHTML = FIELDS.map(function (f, i) {
+      var typeSel = f.core ? '<span class="muted">' + TYPE_LABEL[f.type] + '</span>' :
+        '<select data-p="type">' + D.fieldTypes.map(function (t) { return '<option value="' + t + '"' + (t === f.type ? ' selected' : '') + '>' + TYPE_LABEL[t] + '</option>'; }).join('') + '</select>';
+      return '<tr data-i="' + i + '">' +
+        '<td class="nowrap"><button class="mv" data-mv="-1"' + (i ? '' : ' disabled') + '>↑</button> <button class="mv" data-mv="1"' + (i < FIELDS.length - 1 ? '' : ' disabled') + '>↓</button></td>' +
+        '<td><input type="text" data-p="label" value="' + esc(f.label) + '">' + (f.locked ? '<div class="lock">🔒 기본 필수 항목</div>' : '') + '</td>' +
+        '<td>' + typeSel + '</td>' +
+        '<td><input type="checkbox" data-p="required"' + (f.required ? ' checked' : '') + (f.locked ? ' disabled' : '') + '></td>' +
+        '<td><label class="switch"><input type="checkbox" data-p="visible"' + (f.visible ? ' checked' : '') + (f.locked ? ' disabled' : '') + '><span></span></label></td>' +
+        '<td><input type="text" data-p="options" value="' + esc(f.options) + '"' + (f.type === 'select' ? '' : ' disabled placeholder="선택 유형만"') + '></td>' +
+        '<td><input type="text" data-p="help" value="' + esc(f.help) + '" placeholder="입력칸 안내"></td>' +
+        '<td>' + (f.locked ? '<span class="muted">항상</span>' : '<select data-p="showIf"><option value="">항상 표시</option>' +
+          FIELDS.filter(function (o) { return o !== f && o.key && o.type === 'checkbox'; }).map(function (o) {
+            return '<option value="' + esc(o.key) + '"' + (o.key === f.showIf ? ' selected' : '') + '>\'' + esc(o.label.slice(0, 14)) + '\' 체크 시</option>';
+          }).join('') + '</select>') + '</td>' +
+        '<td>' + (f.core ? '' : '<button class="btn danger del" style="padding:3px 8px">삭제</button>') + '</td></tr>';
+    }).join('');
+    $$('#fields-body tr').forEach(function (tr) {
+      var i = +tr.dataset.i;
+      $$('[data-p]', tr).forEach(function (el) {
+        el.oninput = el.onchange = function () {
+          FIELDS[i][el.dataset.p] = el.type === 'checkbox' ? el.checked : el.value; fieldsDirty = true;
+          if (el.dataset.p === 'type') renderFieldsTab(); else renderFieldPreview();
+        };
+      });
+      $$('[data-mv]', tr).forEach(function (b) {
+        b.onclick = function () { var j = i + +b.dataset.mv; var t = FIELDS[i]; FIELDS[i] = FIELDS[j]; FIELDS[j] = t; fieldsDirty = true; renderFieldsTab(); };
+      });
+      var del = tr.querySelector('.del');
+      if (del) del.onclick = function () {
+        if (!confirm('"' + FIELDS[i].label + '" 항목을 삭제할까요? (이미 받은 응답은 시트에 남습니다)')) return;
+        FIELDS.splice(i, 1); fieldsDirty = true; renderFieldsTab();
+      };
+    });
+    renderFieldPreview();
+  }
+  function renderFieldPreview() {
+    $('#fields-preview').innerHTML = FIELDS.filter(function (f) { return f.visible; }).map(function (f) {
+      var star = f.required ? ' <em>*</em>' : '';
+      if (f.showIf) star += ' <span class="muted">(조건부)</span>';
+      if (f.type === 'checkbox') return '<label><input type="checkbox" style="width:auto" disabled> ' + esc(f.label) + star + '</label>';
+      var input = f.type === 'select' ? '<select disabled><option>선택해주세요</option>' + String(f.options || '').split(',').map(function (o) { return o.trim() ? '<option>' + esc(o.trim()) + '</option>' : ''; }).join('') + '</select>'
+        : f.type === 'textarea' ? '<textarea rows="2" disabled placeholder="' + esc(f.help) + '"></textarea>'
+        : '<input disabled placeholder="' + esc(f.help || TYPE_LABEL[f.type]) + '">';
+      return '<label>' + esc(f.label) + star + '</label>' + input;
+    }).join('') + '<label style="font-weight:400"><input type="checkbox" style="width:auto" disabled> 개인정보 수집·이용 동의 (설정 탭에서 문구 수정)</label>';
+  }
+  $('#add-field').onclick = function () {
+    FIELDS.push({ label: '새 항목', type: 'text', required: false, visible: true, options: '', help: '' });
+    fieldsDirty = true; renderFieldsTab();
+    var inputs = $$('#fields-body [data-p=label]'); inputs[inputs.length - 1].select();
+  };
+  $('#save-fields').onclick = function () {
+    var btn = $('#save-fields'); btn.disabled = true;
+    call('adminSaveFields', TOKEN, FIELDS.map(function (f) {
+      return { key: f.key, label: f.label, type: f.type, required: f.required, visible: f.visible, options: f.options, help: f.help, showIf: f.showIf || '' };
+    })).then(function (fields) { D.fields = fields; fieldsDirty = false; renderFieldsTab(); toast('신청 항목이 저장되었습니다. 신청 페이지에 바로 반영됩니다.'); })
+      .catch(function (e) { toast(errText(e), true); }).then(function () { btn.disabled = false; });
+  };
+
+  // ───── CAMPUS NEXT 편집 ─────
+  var NXE = null, nxDirty = false;
+  var NX_FIELDS = [
+    ['기본', [['enabled', '신청 페이지에 CAMPUS NEXT 탭 표시', 'bool'], ['tabLabel', '탭 이름', 'text']]],
+    ['상단 소개', [['hero.brand', '브랜드 문구', 'text'], ['hero.title', '제목 (줄바꿈 가능, 마지막 줄은 금색 강조)', 'ta2'],
+      ['hero.body', '소개 본문', 'ta6'], ['hero.facts', '정보 카드 (한 줄에 하나: 항목|내용)', 'ta3'],
+      ['hero.flow', '흐름 표시 (쉼표로 구분)', 'text'], ['hero.cta', '신청 버튼 문구', 'text']]],
+    ['[[단계]] 블록', [['steps', '한 줄에 하나: 아이콘|영문|제목|설명', 'ta4']]],
+    ['[[주차]] 블록', [['phases', '한 줄에 하나: 주차(예: 1 또는 2-3)|제목|설명', 'ta4']]],
+    ['[[챌린지]] 블록', [['challenge.goals', '체험용 목표 (한 줄에 하나)', 'ta4'], ['challenge.days', '전체 일수', 'num'],
+      ['challenge.target', '성공 기준 (인증 횟수)', 'num'], ['challenge.reward', '성공 시 안내 문구', 'text'], ['challenge.account', '인증 카드 계정명', 'text']]],
+    ['[[질문카드]] 블록', [['questions', '한 줄에 하나: 분야|질문1|질문2|…', 'ta4']]],
+    ['마지막 신청 안내', [['final.brand', '브랜드 문구', 'text'], ['final.title', '제목', 'ta2'], ['final.body', '본문', 'ta2'],
+      ['final.sub', '강조 문구', 'ta2'], ['final.cta', '신청 버튼 문구', 'text'], ['final.note', '버튼 아래 안내', 'text']]],
+  ];
+  function nxGet(o, path) { return path.split('.').reduce(function (a, k) { return a == null ? '' : a[k]; }, o); }
+  function nxSet(o, path, v) { var ks = path.split('.'), last = ks.pop(); ks.reduce(function (a, k) { return a[k] = a[k] || {}; }, o)[last] = v; }
+
+  function renderNextEditor(force) {
+    if (!force && nxDirty) return;
+    NXE = JSON.parse(JSON.stringify(D.next));
+    var f = function (path, label, type) {
+      var v = nxGet(NXE, path), id = 'nx_' + path.replace('.', '_');
+      if (type === 'bool') return '<label class="field" style="flex-direction:row;align-items:center;gap:8px"><span class="switch"><input type="checkbox" data-nx="' + path + '"' + (v ? ' checked' : '') + '><span></span></span> ' + esc(label) + '</label>';
+      if (type.indexOf('ta') === 0) return '<label class="field">' + esc(label) + '<textarea rows="' + type.slice(2) + '" data-nx="' + path + '">' + esc(v) + '</textarea></label>';
+      return '<label class="field">' + esc(label) + '<input type="' + (type === 'num' ? 'number' : 'text') + '" data-nx="' + path + '" value="' + esc(v) + '"></label>';
+    };
+    $('#nx-fields').innerHTML = NX_FIELDS.map(function (g) {
+      return '<div class="card nx-group"><h3>' + esc(g[0]) + '</h3><div class="nx-grid">' + g[1].map(function (x) { return f(x[0], x[1], x[2]); }).join('') + '</div></div>';
+    }).join('');
+    $$('#nx-fields [data-nx]').forEach(function (el) {
+      el.oninput = el.onchange = function () {
+        var v = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value;
+        nxSet(NXE, el.dataset.nx, v); nxDirty = true; $('#nx-dirty').classList.remove('hidden');
+      };
+    });
+    renderNxSections();
+    nxDirty = false; $('#nx-dirty').classList.add('hidden');
+    $('#nx-view').href = (D.siteUrl || D.webAppUrl || '#') + '?page=next';
+  }
+
+  function renderNxSections() {
+    var S = NXE.sections;
+    $('#nx-sections').innerHTML = S.map(function (s, i) {
+      return '<div class="card nx-secedit" data-i="' + i + '">' +
+        '<div class="nx-sechead"><b>섹션 ' + (i + 1) + '</b><span class="muted">' + esc(s.tag || s.title.split('\n')[0] || '') + '</span>' +
+        '<span style="margin-left:auto;display:flex;gap:4px"><button type="button" class="mv" data-mv="-1"' + (i ? '' : ' disabled') + '>↑</button>' +
+        '<button type="button" class="mv" data-mv="1"' + (i < S.length - 1 ? '' : ' disabled') + '>↓</button>' +
+        '<button type="button" class="btn danger" data-del style="padding:2px 8px">삭제</button></span></div>' +
+        '<div class="nx-grid">' +
+        '<label class="field">태그<input data-s="tag" value="' + esc(s.tag) + '"></label>' +
+        '<label class="field">태그 모양<select data-s="style">' + [['label', '작은 금색 글씨'], ['blue', '남색 배지'], ['gold', '금색 배지']].map(function (o) {
+          return '<option value="' + o[0] + '"' + (s.style === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select></label>' +
+        '<label class="field wide">제목 (줄바꿈 가능)<textarea rows="2" data-s="title">' + esc(s.title) + '</textarea></label>' +
+        '<label class="field wide">부제<input data-s="sub" value="' + esc(s.sub) + '"></label>' +
+        '<label class="field wide">본문<textarea rows="10" data-s="body" class="mono">' + esc(s.body) + '</textarea></label>' +
+        '</div></div>';
+    }).join('');
+    $$('#nx-sections .nx-secedit').forEach(function (card) {
+      var i = +card.dataset.i;
+      $$('[data-s]', card).forEach(function (el) {
+        el.oninput = el.onchange = function () { NXE.sections[i][el.dataset.s] = el.value; nxDirty = true; $('#nx-dirty').classList.remove('hidden'); };
+      });
+      $$('[data-mv]', card).forEach(function (b) {
+        b.onclick = function () { var j = i + +b.dataset.mv, t = S[i]; S[i] = S[j]; S[j] = t; nxDirty = true; $('#nx-dirty').classList.remove('hidden'); renderNxSections(); };
+      });
+      card.querySelector('[data-del]').onclick = function () {
+        if (!confirm('섹션 ' + (i + 1) + '을(를) 삭제할까요?')) return;
+        S.splice(i, 1); nxDirty = true; $('#nx-dirty').classList.remove('hidden'); renderNxSections();
+      };
+    });
+  }
+
+  $('#nx-add').onclick = function () {
+    NXE.sections.push({ tag: '새 섹션', style: 'label', title: '제목을 입력하세요', sub: '', body: '본문을 입력하세요.' });
+    nxDirty = true; $('#nx-dirty').classList.remove('hidden'); renderNxSections();
+    var cards = $$('#nx-sections .nx-secedit'); cards[cards.length - 1].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+  $('#nx-save').onclick = function () {
+    var btn = $('#nx-save'); btn.disabled = true;
+    call('adminSaveNext', TOKEN, NXE).then(function (cfg) {
+      D.next = cfg; nxDirty = false; renderNextEditor(true); toast('CAMPUS NEXT 내용이 저장되었습니다. 신청 페이지에 바로 반영됩니다.');
+    }).catch(function (e) { toast(errText(e), true); }).then(function () { btn.disabled = false; });
+  };
+  $('#nx-reset').onclick = function () {
+    if (!confirm('CAMPUS NEXT 내용을 처음 기본 내용으로 되돌릴까요? 지금까지 수정한 내용은 사라집니다.')) return;
+    call('adminResetNext', TOKEN).then(function (cfg) { D.next = cfg; nxDirty = false; renderNextEditor(true); toast('기본 내용으로 되돌렸습니다.'); })
+      .catch(function (e) { toast(errText(e), true); });
+  };
+
+  // ───── 설정 ─────
+  function renderSettings() {
+    if ($('#settings-form').contains(document.activeElement)) return;
+    $('#settings-rows').innerHTML = D.settings.map(function (s) {
+      var input;
+      if (s.type === 'boolean') input = '<label class="switch"><input type="checkbox" data-k="' + s.key + '"' + (s.value ? ' checked' : '') + '><span></span></label>';
+      else if (['NOTICE', 'AGREE_TEXT', 'FEATURES', 'FEE_TEXT'].indexOf(s.key) >= 0) input = '<textarea rows="' + (s.key === 'FEATURES' ? 5 : 3) + '" data-k="' + s.key + '">' + esc(s.value) + '</textarea>';
+      else input = '<input type="' + (s.type === 'number' ? 'number' : 'text') + '" data-k="' + s.key + '" value="' + esc(s.value) + '">';
+      return '<div class="set-row"><div class="lbl">' + esc(s.label) + '</div><div>' + input + '</div></div>';
+    }).join('');
+  }
+  $('#settings-form').onsubmit = function (e) {
+    e.preventDefault();
+    var vals = {};
+    $$('#settings-rows [data-k]').forEach(function (el) { vals[el.dataset.k] = el.type === 'checkbox' ? el.checked : el.value; });
+    var btn = e.target.querySelector('button'); btn.disabled = true;
+    call('adminSaveSettings', TOKEN, vals).then(function (s) { D.settings = s; document.activeElement.blur(); renderSettings(); toast('설정이 저장되었습니다.'); })
+      .catch(function (err) { toast(errText(err), true); }).then(function () { btn.disabled = false; });
+  };
+  function getKey(rotate) {
+    call('adminGetApiKey', TOKEN, rotate).then(function (r) {
+      $('#api-key').textContent = r.key; if (r.url) $('#api-url').textContent = r.url;
+      if (rotate) toast('새 API 키가 발급되었습니다. MCP 설정을 갱신하세요.');
+    }).catch(function (err) { toast(errText(err), true); });
+  }
+  $('#show-key').onclick = function () { getKey(false); };
+  $('#rotate-key').onclick = function () { if (confirm('키를 재발급하면 기존 MCP 연결이 끊깁니다. 계속할까요?')) getKey(true); };
+
+  // ───── 시작: 저장된 세션 → 구글 계정 자동 로그인 → 비밀번호 ─────
+  (TOKEN ? start(TOKEN) : Promise.reject()).catch(function () {
+    store('ct_admin_token', null); TOKEN = '';
+    return call('adminGoogleLogin').then(function (r) {
+      if (r.token) return start(r.token);
+      $('#login-who').textContent = r.email
+        ? r.email + ' 계정은 관리자로 등록되어 있지 않습니다. 비밀번호로 로그인하세요.'
+        : '관리자 비밀번호를 입력하세요.';
+    });
+  }).catch(function () { $('#login-who').textContent = '관리자 비밀번호를 입력하세요.'; });
+</script>
+</body>
+</html>
