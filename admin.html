@@ -202,6 +202,16 @@
   .nx-helpgrid { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin-top: 8px; align-items: center; }
   .nx-helpgrid code { background: #f5f6fa; border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 12px; white-space: nowrap; }
   code.k { display: block; background: #f5f6fa; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 12px; word-break: break-all; }
+
+  /* 화면 안 확인창 (브라우저 confirm/alert 대신 — 일부 브라우저·Apps Script 화면에서 confirm 이 막히는 문제 방지) */
+  .dlg { position: fixed; inset: 0; background: rgba(10,10,40,.55); display: grid; place-items: center; padding: 16px; z-index: 100; }
+  .dlg-box { background: #fff; border-radius: 14px; padding: 20px; width: 100%; max-width: 360px; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+  .dlg-box p { margin: 0 0 16px; font-size: 15px; line-height: 1.55; color: #161a2b; white-space: pre-wrap; word-break: keep-all; }
+  .dlg-btns { display: flex; gap: 8px; justify-content: flex-end; }
+  .dlg-btns button { border: 0; border-radius: 9px; padding: 10px 16px; font: inherit; font-weight: 700; cursor: pointer; }
+  .dlg-btns .no { background: #eef0f5; color: #3a4152; }
+  .dlg-btns .yes { background: #0f0f70; color: #fff; }
+  .dlg-btns .yes.danger { background: #c53030; }
 </style>
 </head>
 <body>
@@ -482,6 +492,28 @@
     }).join('');
   }
 
+
+  /** 화면 안 확인창. ask('메시지', {ok, cancel, danger}) → Promise<boolean>, ask('메시지', {alert: true}) → 확인 버튼만 */
+  function ask(msg, opt) {
+    opt = opt || {};
+    return new Promise(function (resolve) {
+      var o = document.createElement('div');
+      o.className = 'dlg';
+      o.setAttribute('role', 'dialog');
+      o.innerHTML = '<div class="dlg-box"><p></p><div class="dlg-btns">' +
+        (opt.alert ? '' : '<button type="button" class="no">' + esc(opt.cancel || '아니요') + '</button>') +
+        '<button type="button" class="yes' + (opt.danger ? ' danger' : '') + '">' + esc(opt.ok || '확인') + '</button></div></div>';
+      o.querySelector('p').textContent = msg;
+      function done(v) { document.removeEventListener('keydown', onKey); o.remove(); resolve(v); }
+      function onKey(e) { if (e.key === 'Escape') done(false); if (e.key === 'Enter') done(true); }
+      o.querySelector('.yes').onclick = function () { done(true); };
+      if (!opt.alert) o.querySelector('.no').onclick = function () { done(false); };
+      o.onclick = function (e) { if (e.target === o) done(false); };
+      document.addEventListener('keydown', onKey);
+      document.body.appendChild(o);
+      o.querySelector('.yes').focus();
+    });
+  }
   var TOKEN = store('ct_admin_token') || '';
   var D = null;
   function pname(code) { var p = D.programs.filter(function (x) { return x.code === code; })[0]; return p ? p.name : code; }
@@ -623,11 +655,13 @@
     $('#bulk-approve').classList.toggle('hidden', !waiting.length);
     $('#bulk-approve').textContent = '목록의 대기 ' + waiting.length + '건 모두 승인';
     $('#bulk-approve').onclick = function () {
-      if (!confirm('대기 중인 ' + waiting.length + '건을 모두 승인(확정)할까요? 이메일을 남긴 신청자에게 확정 메일이 발송됩니다.')) return;
-      var btn = $('#bulk-approve'); btn.disabled = true;
-      waiting.reduce(function (pr, a) { return pr.then(function () { return call('adminUpdateApp', TOKEN, a.id, { status: '확정' }); }); }, Promise.resolve())
-        .then(function () { toast(waiting.length + '건 승인했습니다.'); return refresh(); })
-        .catch(function (e) { toast(errText(e), true); refresh(); }).then(function () { btn.disabled = false; });
+      ask('대기 중인 ' + waiting.length + '건을 모두 승인(확정)할까요?\n이메일을 남긴 신청자에게 확정 메일이 발송됩니다.', { ok: '모두 승인' }).then(function (ok) {
+        if (!ok) return;
+        var btn = $('#bulk-approve'); btn.disabled = true;
+        waiting.reduce(function (pr, a) { return pr.then(function () { return call('adminUpdateApp', TOKEN, a.id, { status: '확정' }); }); }, Promise.resolve())
+          .then(function () { toast(waiting.length + '건 승인했습니다.'); return refresh(); })
+          .catch(function (e) { toast(errText(e), true); refresh(); }).then(function () { btn.disabled = false; });
+      });
     };
 
     $('#apps-body').innerHTML = list.length ? list.map(function (a) {
@@ -654,8 +688,11 @@
       var id = tr.dataset.id;
       tr.querySelector('.st').onchange = function (e) {
         var val = e.target.value;
-        if (val === '취소' && !confirm(id + ' 신청을 취소 처리할까요?')) { renderApps(); return; }
-        updateApp(id, { status: val }, '상태가 "' + val + '"(으)로 변경되었습니다.');
+        if (val !== '취소') return updateApp(id, { status: val }, '상태가 "' + val + '"(으)로 변경되었습니다.');
+        ask(id + ' 신청을 취소 처리할까요?\n이메일을 남긴 신청자에게 취소 안내 메일이 발송됩니다.', { ok: '취소 처리', cancel: '돌아가기', danger: true }).then(function (ok) {
+          if (ok) updateApp(id, { status: '취소' }, id + ' 신청을 취소 처리했습니다.');
+          else renderApps();
+        });
       };
       var ap = tr.querySelector('.approve');
       if (ap) ap.onclick = function () { ap.disabled = true; updateApp(id, { status: '확정' }, id + ' 승인(확정)했습니다.'); };
@@ -724,9 +761,11 @@
         }).catch(function (err) { toast(errText(err), true); e.target.checked = !e.target.checked; });
       };
       tr.querySelector('.del').onclick = function () {
-        if (!confirm(key.split('|').slice(0, 2).join(' ') + ' 일정을 삭제할까요?')) return;
-        call('adminDeleteSlot', TOKEN, key).then(function (slots) { D.slots = slots; renderSlots(); renderDash(); toast('삭제되었습니다.'); })
-          .catch(function (err) { toast(errText(err), true); });
+        ask(key.split('|').slice(0, 2).join(' ') + ' 일정을 삭제할까요?', { ok: '삭제', danger: true }).then(function (ok) {
+          if (!ok) return;
+          call('adminDeleteSlot', TOKEN, key).then(function (slots) { D.slots = slots; renderSlots(); renderDash(); toast('삭제되었습니다.'); })
+            .catch(function (err) { toast(errText(err), true); });
+        });
       };
       tr.querySelector('.view').onclick = function () {
         $('#f-period').value = d < today ? 'past' : 'upcoming'; $('#f-status').value = ''; $('#f-q').value = ''; $('#f-prog').value = tr.dataset.prog;
@@ -817,10 +856,12 @@
   };
   $('#pm-del').onclick = function () {
     var code = $('#prog-form').elements.code.value;
-    if (!confirm(code + ' 프로그램을 삭제할까요?')) return;
-    call('adminDeleteProgram', TOKEN, code).then(function (progs) {
-      D.programs = progs; $('#pmodal').classList.add('hidden'); toast('삭제되었습니다.'); setData(D);
-    }).catch(function (err) { toast(errText(err), true); });
+    ask(code + ' 프로그램을 삭제할까요?', { ok: '삭제', danger: true }).then(function (ok) {
+      if (!ok) return;
+      call('adminDeleteProgram', TOKEN, code).then(function (progs) {
+        D.programs = progs; $('#pmodal').classList.add('hidden'); toast('삭제되었습니다.'); setData(D);
+      }).catch(function (err) { toast(errText(err), true); });
+    });
   };
 
   $('#sync-btn').onclick = function () {
@@ -891,8 +932,10 @@
       });
       var del = tr.querySelector('.del');
       if (del) del.onclick = function () {
-        if (!confirm('"' + FIELDS[i].label + '" 항목을 삭제할까요? (이미 받은 응답은 시트에 남습니다)')) return;
-        FIELDS.splice(i, 1); fieldsDirty = true; renderFieldsTab();
+        ask('"' + FIELDS[i].label + '" 항목을 삭제할까요?\n(저장해야 반영되며, 이미 받은 응답은 시트에 남습니다)', { ok: '삭제', danger: true }).then(function (ok) {
+          if (!ok) return;
+          FIELDS.splice(i, 1); fieldsDirty = true; renderFieldsTab();
+        });
       };
     });
     renderFieldPreview();
@@ -988,8 +1031,10 @@
         b.onclick = function () { var j = i + +b.dataset.mv, t = S[i]; S[i] = S[j]; S[j] = t; nxDirty = true; $('#nx-dirty').classList.remove('hidden'); renderNxSections(); };
       });
       card.querySelector('[data-del]').onclick = function () {
-        if (!confirm('섹션 ' + (i + 1) + '을(를) 삭제할까요?')) return;
-        S.splice(i, 1); nxDirty = true; $('#nx-dirty').classList.remove('hidden'); renderNxSections();
+        ask('섹션 ' + (i + 1) + '을(를) 삭제할까요? (저장해야 반영됩니다)', { ok: '삭제', danger: true }).then(function (ok) {
+          if (!ok) return;
+          S.splice(i, 1); nxDirty = true; $('#nx-dirty').classList.remove('hidden'); renderNxSections();
+        });
       };
     });
   }
@@ -1006,9 +1051,11 @@
     }).catch(function (e) { toast(errText(e), true); }).then(function () { btn.disabled = false; });
   };
   $('#nx-reset').onclick = function () {
-    if (!confirm('CAMPUS NEXT 내용을 처음 기본 내용으로 되돌릴까요? 지금까지 수정한 내용은 사라집니다.')) return;
-    call('adminResetNext', TOKEN).then(function (cfg) { D.next = cfg; nxDirty = false; renderNextEditor(true); toast('기본 내용으로 되돌렸습니다.'); })
-      .catch(function (e) { toast(errText(e), true); });
+    ask('CAMPUS NEXT 내용을 처음 기본 내용으로 되돌릴까요?\n지금까지 수정한 내용은 사라집니다.', { ok: '되돌리기', danger: true }).then(function (ok) {
+      if (!ok) return;
+      call('adminResetNext', TOKEN).then(function (cfg) { D.next = cfg; nxDirty = false; renderNextEditor(true); toast('기본 내용으로 되돌렸습니다.'); })
+        .catch(function (e) { toast(errText(e), true); });
+    });
   };
 
   // ───── 설정 ─────
@@ -1037,7 +1084,9 @@
     }).catch(function (err) { toast(errText(err), true); });
   }
   $('#show-key').onclick = function () { getKey(false); };
-  $('#rotate-key').onclick = function () { if (confirm('키를 재발급하면 기존 MCP 연결이 끊깁니다. 계속할까요?')) getKey(true); };
+  $('#rotate-key').onclick = function () {
+    ask('키를 재발급하면 기존 MCP 연결이 끊깁니다. 계속할까요?', { ok: '재발급', danger: true }).then(function (ok) { if (ok) getKey(true); });
+  };
 
   // ───── 시작: 저장된 세션 → 구글 계정 자동 로그인 → 비밀번호 ─────
   (TOKEN ? start(TOKEN) : Promise.reject()).catch(function () {

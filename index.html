@@ -292,6 +292,16 @@
   .nx-final .nx-flow { justify-content: center; margin: 12px 0 16px; }
   .nx-final .sub { color: #fff; font-weight: 700; }
   .nx-final .note { font-size: 12.5px; margin-top: 10px; }
+
+  /* 화면 안 확인창 (브라우저 confirm/alert 대신 — 일부 브라우저·Apps Script 화면에서 confirm 이 막히는 문제 방지) */
+  .dlg { position: fixed; inset: 0; background: rgba(10,10,40,.55); display: grid; place-items: center; padding: 16px; z-index: 100; }
+  .dlg-box { background: #fff; border-radius: 14px; padding: 20px; width: 100%; max-width: 360px; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+  .dlg-box p { margin: 0 0 16px; font-size: 15px; line-height: 1.55; color: #161a2b; white-space: pre-wrap; word-break: keep-all; }
+  .dlg-btns { display: flex; gap: 8px; justify-content: flex-end; }
+  .dlg-btns button { border: 0; border-radius: 9px; padding: 10px 16px; font: inherit; font-weight: 700; cursor: pointer; }
+  .dlg-btns .no { background: #eef0f5; color: #3a4152; }
+  .dlg-btns .yes { background: #0f0f70; color: #fff; }
+  .dlg-btns .yes.danger { background: #c53030; }
 </style>
 </head>
 <body>
@@ -411,6 +421,28 @@
     };
   });
 
+
+  /** 화면 안 확인창. ask('메시지', {ok, cancel, danger}) → Promise<boolean>, ask('메시지', {alert: true}) → 확인 버튼만 */
+  function ask(msg, opt) {
+    opt = opt || {};
+    return new Promise(function (resolve) {
+      var o = document.createElement('div');
+      o.className = 'dlg';
+      o.setAttribute('role', 'dialog');
+      o.innerHTML = '<div class="dlg-box"><p></p><div class="dlg-btns">' +
+        (opt.alert ? '' : '<button type="button" class="no">' + esc(opt.cancel || '아니요') + '</button>') +
+        '<button type="button" class="yes' + (opt.danger ? ' danger' : '') + '">' + esc(opt.ok || '확인') + '</button></div></div>';
+      o.querySelector('p').textContent = msg;
+      function done(v) { document.removeEventListener('keydown', onKey); o.remove(); resolve(v); }
+      function onKey(e) { if (e.key === 'Escape') done(false); if (e.key === 'Enter') done(true); }
+      o.querySelector('.yes').onclick = function () { done(true); };
+      if (!opt.alert) o.querySelector('.no').onclick = function () { done(false); };
+      o.onclick = function (e) { if (e.target === o) done(false); };
+      document.addEventListener('keydown', onKey);
+      document.body.appendChild(o);
+      o.querySelector('.yes').focus();
+    });
+  }
   // ───── 신청 ─────
   var info = null, pick = { program: null, date: null, time: null }, openSpots = {};
   function progOf(code) { return info.programs.filter(function (p) { return p.code === code; })[0]; }
@@ -646,10 +678,12 @@
       (a.canCancel ? '<button class="btn ghost" id="cancel-btn">신청 취소하기</button>' : '');
     var cb = $('#cancel-btn');
     if (cb) cb.onclick = function () {
-      if (!confirm('정말 신청을 취소하시겠어요?')) return;
-      cb.disabled = true;
-      call('cancelApplication', cur.id, lookupPhone()).then(renderResult)
-        .catch(function (e) { alert(errText(e)); cb.disabled = false; });
+      ask('정말 신청을 취소하시겠어요?', { ok: '신청 취소', cancel: '돌아가기', danger: true }).then(function (ok) {
+        if (!ok) return;
+        cb.disabled = true;
+        call('cancelApplication', cur.id, lookupPhone()).then(function (a) { renderResult(a); ask('신청이 취소되었습니다.', { alert: true }); })
+          .catch(function (e) { ask(errText(e), { alert: true }); cb.disabled = false; });
+      });
     };
     $('#fb-form').classList.toggle('hidden', !a.canFeedback);
   }
@@ -680,7 +714,7 @@
     call('submitFeedback', cur.id, lookupPhone(), rating, e.target.elements.comment.value).then(function (a) {
       renderResult(a);
       e.target.reset(); rating = 0; renderStars(); showMsg($('#fb-msg'), '');
-      alert('소중한 후기 감사합니다!');
+      ask('소중한 후기 감사합니다!', { alert: true });
     }).catch(function (err) { showMsg($('#fb-msg'), errText(err)); })
       .then(function () { btn.disabled = false; });
   };
